@@ -300,6 +300,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         String script = readAsset("inject/theme.js")
                 + "\n" + readAsset("inject/net.js")
                 + "\n" + readAsset("inject/download.js")
+                + "\n" + readAsset("inject/square-download.js")
                 + "\n" + cssInjector(css);
 
         // Run before any page script. Each injected JS file guards on the host name so
