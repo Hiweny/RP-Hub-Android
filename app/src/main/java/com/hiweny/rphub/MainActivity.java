@@ -29,9 +29,9 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsAnimationCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.webkit.WebSettingsCompat;
@@ -46,18 +46,21 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
 
 /**
  * Full-screen immersive WebView shell for RP Hub.
  *
  * <p>Loads the live site so the APK always tracks the web version, and layers on
  * device-side polish: immersive edge-to-edge display, an always-dark theme with a
- * fallback layer covering surfaces the site misses, mobile performance tuning, a
- * keyboard that lifts the page's own composer, and working upload / export flows.</p>
+ * fallback layer for the surfaces the site misses, mobile performance tuning, a
+ * keyboard that lifts the page's own composer in sync with the IME animation, and
+ * working upload / export flows.</p>
  */
 public class MainActivity extends AppCompatActivity implements Bridge.Listener {
 
     private static final String START_URL = "https://sta1n156.github.io/RP-Hub/";
+    private static final String MAIN_HOST = "sta1n156.github.io";
     private static final int COLOR_DARK = 0xFF1E1E1E;
 
     private FrameLayout rootView;
@@ -122,6 +125,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         webView = new WebView(this);
 
         rootView = new FrameLayout(this);
+        rootView.setBackgroundColor(COLOR_DARK);
         rootView.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(rootView);
@@ -156,8 +160,9 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             }
         } catch (Throwable ignored) { }
         try {
-            // Let WebView force-darken pages that ship no dark theme (the embedded
+            // WebView force-darkens pages that ship no dark theme (the embedded
             // 万相广场 frame); pages that declare colour-scheme support are untouched.
+            // We no longer inject our own CSS there - that caused a half-lit result.
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
                 WebSettingsCompat.setAlgorithmicDarkeningAllowed(s, true);
             } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
@@ -238,22 +243,40 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         });
 
         if (manualIme) {
-            // In a full-screen (edge to edge) shell the window never resizes for the
-            // keyboard. Shrinking the content view is exactly what the page expects
-            // (its viewport meta declares interactive-widget=resizes-content), so its
-            // own layout lifts the composer above the keyboard.
+            // A full-screen (edge to edge) shell never resizes its window for the
+            // keyboard, so we shrink the content view ourselves - which is exactly what
+            // the page expects (its viewport declares interactive-widget=resizes-content)
+            // and how its own layout lifts the composer.
+            //
+            // Driving the padding from the IME *animation* keeps it in lock-step with the
+            // keyboard, so the composer glides up/down instead of jumping (no flicker).
+            ViewCompat.setWindowInsetsAnimationCallback(rootView,
+                    new WindowInsetsAnimationCompat.Callback(
+                            WindowInsetsAnimationCompat.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                        @NonNull
+                        @Override
+                        public WindowInsetsCompat onProgress(@NonNull WindowInsetsCompat insets,
+                                                             @NonNull List<WindowInsetsAnimationCompat> running) {
+                            applyImeInset(insets);
+                            return insets;
+                        }
+                    });
             ViewCompat.setOnApplyWindowInsetsListener(rootView, (v, insets) -> {
-                Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
-                int bottom = Math.max(ime.bottom, 0);
-                if (v.getPaddingBottom() != bottom) {
-                    v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), bottom);
-                }
+                applyImeInset(insets);
                 return insets;
             });
             ViewCompat.requestApplyInsets(rootView);
         }
 
         injectScripts();
+    }
+
+    /** Applies the keyboard height to the content view's bottom padding. */
+    private void applyImeInset(WindowInsetsCompat insets) {
+        int bottom = Math.max(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom, 0);
+        if (rootView != null && rootView.getPaddingBottom() != bottom) {
+            rootView.setPadding(0, 0, 0, bottom);
+        }
     }
 
     private void systemDownload(String url, String userAgent,
@@ -294,13 +317,12 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     }
 
     private void injectScripts() {
-        String mainCss = readAsset("inject/perf.css") + "\n" + readAsset("inject/dark.css");
-        String frameCss = readAsset("inject/external-dark.css");
+        String css = readAsset("inject/perf.css") + "\n" + readAsset("inject/dark.css");
 
         String script = readAsset("inject/theme.js")
                 + "\n" + readAsset("inject/net.js")
                 + "\n" + readAsset("inject/download.js")
-                + "\n" + cssInjector(mainCss, frameCss);
+                + "\n" + cssInjector(css);
 
         // Run before any page script. Each injected JS file guards on the host name so
         // cross-origin embedded frames (万相广场) are never touched by page hooks.
@@ -314,18 +336,17 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     }
 
     /**
-     * Injects the right stylesheet per origin: the full dark fallback on the main
-     * app, and a minimal force-dark layer inside embedded cross-origin frames.
+     * Injects the dark fallback stylesheet into the main app only. Embedded
+     * cross-origin frames are left to WebView's own force-darkening, which maps the
+     * whole page consistently (injecting our CSS there gave a half-light result).
      */
-    private static String cssInjector(String mainCss, String frameCss) {
+    private static String cssInjector(String css) {
         return "(function(){if(window.__RPHUB_CSS__)return;window.__RPHUB_CSS__=1;"
-                + "var main=(location.hostname==='sta1n156.github.io');"
-                + "var css=main?(" + JSONObject.quote(mainCss) + "):(" + JSONObject.quote(frameCss) + ");"
-                + "if(!css)return;"
+                + "if(location.hostname!=='" + MAIN_HOST + "')return;"
                 + "function add(){try{var root=document.head||document.documentElement;"
                 + "if(!root)return false;var s=document.createElement('style');"
-                + "s.setAttribute('data-rphub','1');s.textContent=css;root.appendChild(s);"
-                + "return true;}catch(e){return false;}}"
+                + "s.setAttribute('data-rphub','1');s.textContent=" + JSONObject.quote(css) + ";"
+                + "root.appendChild(s);return true;}catch(e){return false;}}"
                 + "if(!add()){document.addEventListener('DOMContentLoaded',add,{once:true});}})();";
     }
 
@@ -350,6 +371,9 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             window.setNavigationBarContrastEnforced(false);
         }
         window.getDecorView().setBackgroundColor(COLOR_DARK);
+        if (rootView != null) {
+            rootView.setBackgroundColor(COLOR_DARK);
+        }
         if (webView != null) {
             webView.setBackgroundColor(COLOR_DARK);
         }
