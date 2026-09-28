@@ -1,0 +1,47 @@
+/* RP Hub APK — injected performance layer.
+   These rules are conservative: they only remove things that are expensive on
+   mobile GPUs (blur compositing, scrollbars, tap highlight) while keeping the
+   exact same layout and colours. */
+
+/* 1. Remove the grey tap highlight so taps feel instant. */
+* {
+    -webkit-tap-highlight-color: transparent !important;
+}
+
+/* 2. Kill rubber-band chaining that can drag the whole document. */
+html, body {
+    overscroll-behavior: none !important;
+}
+
+/* 3. Hide scrollbars: they cost a repaint on every scroll on mobile. */
+::-webkit-scrollbar {
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
+}
+
+/* 4. backdrop-filter (blur) is the single most expensive effect on mobile GPUs.
+   The page uses it on menus/modals over near-solid backgrounds, so replacing
+   it with a plain translucent fill is visually almost identical but far cheaper. */
+[class*="backdrop-blur"] {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+}
+
+/* 5. Keep heavy elevation shadows cheap to composite. */
+.shadow-2xl {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14) !important;
+}
+.shadow-soft {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.10) !important;
+}
+.shadow-card {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* 6. Promote long, continuously scrolling message lists onto their own layer
+   so scrolling does not repaint the whole page. */
+.custom-scrollbar,
+.app-main {
+    -webkit-overflow-scrolling: touch;
+}
