@@ -50,7 +50,17 @@ android {
     }
 }
 
+configurations.all {
+    resolutionStrategy {
+        // Unify Kotlin stdlib variants (androidx pulls an older stdlib-jdk8).
+        force("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.24")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.24")
+    }
+}
+
 dependencies {
+    implementation(platform("org.jetbrains.kotlin:kotlin-bom:1.9.24"))
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.core:core:1.13.1")
     implementation("androidx.webkit:webkit:1.11.0")
