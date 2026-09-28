@@ -1,18 +1,13 @@
 package com.hiweny.rphub;
 
 import android.content.ActivityNotFoundException;
-import android.content.ContentResolver;
-import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
-import android.provider.MediaStore;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -33,7 +28,6 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
-import androidx.core.content.ContextCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -44,8 +38,6 @@ import androidx.webkit.WebViewFeature;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -56,23 +48,21 @@ import java.util.Collections;
  * Full-screen immersive WebView shell for RP Hub.
  *
  * <p>Loads the live site so the APK always tracks the web version, and layers on
- * device-side polish: immersive edge-to-edge display, system light/dark following,
- * mobile performance tweaks, and working upload/download flows.</p>
+ * device-side polish: immersive edge-to-edge display, the page's own dark theme,
+ * mobile performance tuning, and working upload / export flows.</p>
  */
 public class MainActivity extends AppCompatActivity implements Bridge.Listener {
 
     private static final String START_URL = "https://sta1n156.github.io/RP-Hub/";
-    private static final int REQ_WRITE_STORAGE = 1001;
-    private static final int COLOR_LIGHT = 0xFFF9FAFB;
     private static final int COLOR_DARK = 0xFF1E1E1E;
 
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
+    private ActivityResultLauncher<Intent> saveLauncher;
     private String fallbackScript = "";
 
-    private byte[] pendingData;
-    private String pendingName;
+    private byte[] pendingSaveData;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -80,6 +70,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
 
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
 
+        // Upload: pick a file through the system file manager.
         fileChooserLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
@@ -91,6 +82,22 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                     }
                     fileCallback.onReceiveValue(uris);
                     fileCallback = null;
+                });
+
+        // Export: never write silently - ask the user where to save (SAF).
+        saveLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    byte[] data = pendingSaveData;
+                    pendingSaveData = null;
+                    if (data == null) return;
+                    if (result.getResultCode() == RESULT_OK
+                            && result.getData() != null
+                            && result.getData().getData() != null) {
+                        writeTo(result.getData().getData(), data);
+                    } else {
+                        Toast.makeText(this, "已取消导出", Toast.LENGTH_SHORT).show();
+                    }
                 });
 
         buildWebView();
@@ -109,8 +116,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(webView);
 
-        boolean night = isNightMode();
-        webView.setBackgroundColor(night ? COLOR_DARK : COLOR_LIGHT);
+        webView.setBackgroundColor(COLOR_DARK);
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -132,8 +138,16 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             s.setSafeBrowsingEnabled(false); // fewer round-trips on navigation
         }
-        // The page styles its own dark theme, so never let WebView algorithmically dim it.
+
+        // --- low-level rendering tuning -------------------------------------------------
         try {
+            // Pre-rasterise off-screen content: keeps long chat lists smooth while scrolling.
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.OFF_SCREEN_PRERASTER)) {
+                WebSettingsCompat.setOffscreenPreRaster(s, true);
+            }
+        } catch (Throwable ignored) { }
+        try {
+            // The page styles its own dark theme, so never let WebView algorithmically dim it.
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
                 WebSettingsCompat.setAlgorithmicDarkeningAllowed(s, false);
             } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
@@ -200,14 +214,14 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             }
         });
 
-        // Plain http(s) downloads are handed to the system DownloadManager.
+        // Direct http(s) downloads (rare) go to the system DownloadManager.
         webView.setDownloadListener(new DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition,
                                         String mimetype, long contentLength) {
                 if (url == null || url.startsWith("blob:") || url.startsWith("data:")) return;
                 try {
-                    DownloadManagerRequest(url, userAgent, contentDisposition, mimetype);
+                    systemDownload(url, userAgent, contentDisposition, mimetype);
                 } catch (Exception e) {
                     try {
                         startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
@@ -219,8 +233,8 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         injectScripts();
     }
 
-    private void DownloadManagerRequest(String url, String userAgent,
-                                        String contentDisposition, String mimetype) {
+    private void systemDownload(String url, String userAgent,
+                                String contentDisposition, String mimetype) {
         android.app.DownloadManager.Request request =
                 new android.app.DownloadManager.Request(Uri.parse(url));
         if (mimetype != null) request.setMimeType(mimetype);
@@ -231,7 +245,8 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         request.setTitle(fileName);
         request.setNotificationVisibility(
                 android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-        request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName);
+        request.setDestinationInExternalPublicDir(
+                android.os.Environment.DIRECTORY_DOWNLOADS, fileName);
         android.app.DownloadManager dm =
                 (android.app.DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm != null) {
@@ -249,7 +264,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 || scheme.equals("about") || scheme.equals("javascript")) {
             return false; // stay inside the WebView
         }
-        // tel:, mailto:, intent:, market:, custom app schemes -> system
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, uri));
         } catch (ActivityNotFoundException ignored) { }
@@ -261,7 +275,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 + "\n" + readAsset("inject/download.js")
                 + "\n" + cssInjector(readAsset("inject/perf.css"));
 
-        // Preferred: run before any page script so theme + download hooks exist first.
+        // Preferred: run before any page script so theme + export hooks exist first.
         try {
             WebViewCompat.addDocumentStartJavaScript(webView, script, Collections.singleton("*"));
             return;
@@ -294,7 +308,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     }
 
     private void applySystemUi() {
-        boolean night = isNightMode();
         Window window = getWindow();
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.TRANSPARENT);
@@ -302,9 +315,9 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             window.setStatusBarContrastEnforced(false);
             window.setNavigationBarContrastEnforced(false);
         }
-        window.getDecorView().setBackgroundColor(night ? COLOR_DARK : COLOR_LIGHT);
+        window.getDecorView().setBackgroundColor(COLOR_DARK);
         if (webView != null) {
-            webView.setBackgroundColor(night ? COLOR_DARK : COLOR_LIGHT);
+            webView.setBackgroundColor(COLOR_DARK);
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams lp = window.getAttributes();
@@ -318,11 +331,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         // Immersive full-screen: no status bar, no navigation bar -> no white edges.
         controller.hide(WindowInsetsCompat.Type.systemBars());
-    }
-
-    private boolean isNightMode() {
-        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        return mode == Configuration.UI_MODE_NIGHT_YES;
     }
 
     @Override
@@ -356,104 +364,37 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         super.onDestroy();
     }
 
-    // ---- Bridge.Listener : blob downloads forwarded from the page ----
+    // ---- Bridge.Listener : blob export forwarded from the page ----
 
     @Override
     public void onDownload(String name, String mime, byte[] data) {
-        runOnUiThread(() -> saveToDownloads(name, mime, data));
+        runOnUiThread(() -> startSaveFlow(name, mime, data));
     }
 
-    private void saveToDownloads(String name, String mime, byte[] data) {
-        if (name == null || name.isEmpty()) name = "rphub-download";
-        if (mime == null || mime.isEmpty()) mime = "application/octet-stream";
+    private void startSaveFlow(String name, String mime, byte[] data) {
+        if (name == null || name.isEmpty()) name = "export";
+        String cleanMime = (mime == null || mime.isEmpty())
+                ? "application/octet-stream" : mime.split(";")[0].trim();
+        pendingSaveData = data;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType(cleanMime);
+        intent.putExtra(Intent.EXTRA_TITLE, name);
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                saveWithMediaStore(name, mime, data);
-            } else {
-                if (ContextCompat.checkSelfPermission(this,
-                        android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    pendingData = data;
-                    pendingName = name;
-                    requestPermissions(new String[]{
-                            android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_WRITE_STORAGE);
-                    return;
-                }
-                saveLegacy(name, data);
-            }
+            saveLauncher.launch(intent);
+        } catch (Exception e) {
+            pendingSaveData = null;
+            Toast.makeText(this, "无法打开保存对话框", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void writeTo(Uri uri, byte[] data) {
+        try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+            if (os == null) throw new IOException("无法写入目标文件");
+            os.write(data);
+            Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {
             Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void saveWithMediaStore(String name, String mime, byte[] data) throws IOException {
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-        values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
-        values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-        values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-
-        ContentResolver resolver = getContentResolver();
-        Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-        if (uri == null) throw new IOException("无法创建下载项");
-
-        try (OutputStream os = resolver.openOutputStream(uri)) {
-            if (os == null) throw new IOException("无法打开输出流");
-            os.write(data);
-        }
-
-        values.clear();
-        values.put(MediaStore.MediaColumns.IS_PENDING, 0);
-        resolver.update(uri, values, null, null);
-
-        toastSaved(name);
-    }
-
-    private void saveLegacy(String name, byte[] data) throws IOException {
-        File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        if (!dir.exists() && !dir.mkdirs()) throw new IOException("无法创建下载目录");
-        File file = uniqueFile(dir, name);
-        try (FileOutputStream fos = new FileOutputStream(file)) {
-            fos.write(data);
-        }
-        toastSaved(file.getName());
-    }
-
-    private File uniqueFile(File dir, String name) {
-        File file = new File(dir, name);
-        if (!file.exists()) return file;
-        int dot = name.lastIndexOf('.');
-        String base = dot > 0 ? name.substring(0, dot) : name;
-        String ext = dot > 0 ? name.substring(dot) : "";
-        int i = 1;
-        while (file.exists()) {
-            file = new File(dir, base + "(" + i + ")" + ext);
-            i++;
-        }
-        return file;
-    }
-
-    private void toastSaved(String name) {
-        Toast.makeText(this, "已保存到「下载」：" + name, Toast.LENGTH_LONG).show();
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_WRITE_STORAGE) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED
-                    && pendingData != null) {
-                try {
-                    saveLegacy(pendingName != null ? pendingName : "rphub-download", pendingData);
-                } catch (Exception e) {
-                    Toast.makeText(this, "保存失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
-                }
-            } else {
-                Toast.makeText(this, "未获得存储权限，无法保存文件", Toast.LENGTH_LONG).show();
-            }
-            pendingData = null;
-            pendingName = null;
         }
     }
 }
