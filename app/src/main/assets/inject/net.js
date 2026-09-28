@@ -1,7 +1,6 @@
-/* Connection warm-up.
-   The site pulls Tailwind, Vue, marked, DOMPurify and Sortable from CDNs at run
-   time; preconnecting early shaves a round-trip off first paint. */
 (function () {
+    // Main app only - CDN warm-up is pointless (and risky) inside embedded frames.
+    if (location.hostname !== 'sta1n156.github.io') return;
     if (window.__RPHUB_NET__) return;
     window.__RPHUB_NET__ = true;
     try {

@@ -1,4 +1,7 @@
 (function () {
+    // Main app only. Hooking URL.createObjectURL / anchor click inside a
+    // cross-origin embedded frame (万相广场) broke that page, so never do it there.
+    if (location.hostname !== 'sta1n156.github.io') return;
     if (window.__RPHUB_DL__) return;
     window.__RPHUB_DL__ = true;
     try {

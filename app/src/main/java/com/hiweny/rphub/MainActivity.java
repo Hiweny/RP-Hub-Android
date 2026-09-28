@@ -51,14 +51,13 @@ import java.util.Collections;
  * Full-screen immersive WebView shell for RP Hub.
  *
  * <p>Loads the live site so the APK always tracks the web version, and layers on
- * device-side polish: immersive edge-to-edge display, system light/dark following
- * with graceful dark fallback, mobile performance tuning, a keyboard bridge that
- * lifts the page's own composer, and working upload / export flows.</p>
+ * device-side polish: immersive edge-to-edge display, an always-dark theme with a
+ * fallback layer covering surfaces the site misses, mobile performance tuning, a
+ * keyboard that lifts the page's own composer, and working upload / export flows.</p>
  */
 public class MainActivity extends AppCompatActivity implements Bridge.Listener {
 
     private static final String START_URL = "https://sta1n156.github.io/RP-Hub/";
-    private static final int COLOR_LIGHT = 0xFFF9FAFB;
     private static final int COLOR_DARK = 0xFF1E1E1E;
 
     private FrameLayout rootView;
@@ -69,14 +68,13 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     private String fallbackScript = "";
 
     private byte[] pendingSaveData;
-    private int lastImeHeight = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Edge-to-edge is only reliable together with the IME insets API (Android 11+).
-        // On older devices we let the platform handle keyboard resizing directly.
+        // Edge-to-edge + the IME insets API only work well together on Android 11+.
+        // On older devices we let the platform resize the window for the keyboard.
         boolean manualIme = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R;
         WindowCompat.setDecorFitsSystemWindows(getWindow(), !manualIme);
 
@@ -128,8 +126,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(rootView);
 
-        boolean night = isNightMode();
-        webView.setBackgroundColor(night ? COLOR_DARK : COLOR_LIGHT);
+        webView.setBackgroundColor(COLOR_DARK);
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -154,15 +151,13 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
 
         // --- low-level rendering tuning -------------------------------------------------
         try {
-            // Pre-rasterise off-screen content: keeps long chat lists smooth while scrolling.
             if (WebViewFeature.isFeatureSupported(WebViewFeature.OFF_SCREEN_PRERASTER)) {
                 WebSettingsCompat.setOffscreenPreRaster(s, true);
             }
         } catch (Throwable ignored) { }
         try {
-            // Allow WebView to force-darken pages that ship no dark theme of their own
-            // (the embedded 万相广场 frame). Pages that declare colour-scheme support -
-            // like the main app - are left untouched.
+            // Let WebView force-darken pages that ship no dark theme (the embedded
+            // 万相广场 frame); pages that declare colour-scheme support are untouched.
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
                 WebSettingsCompat.setAlgorithmicDarkeningAllowed(s, true);
             } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
@@ -170,13 +165,11 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             }
         } catch (Throwable ignored) { }
 
-        // Scrolling polish: no edge glow, no scrollbars.
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
         webView.setScrollbarFadingEnabled(true);
 
-        // Keep the renderer alive / high priority to avoid reload stalls.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
@@ -229,7 +222,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             }
         });
 
-        // Direct http(s) downloads (rare) go to the system DownloadManager.
         webView.setDownloadListener(new DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition,
@@ -246,20 +238,19 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         });
 
         if (manualIme) {
-            // Full-screen shell never resizes: forward the keyboard height to the page,
-            // which lifts its own composer (see inject/keyboard.js).
+            // In a full-screen (edge to edge) shell the window never resizes for the
+            // keyboard. Shrinking the content view is exactly what the page expects
+            // (its viewport meta declares interactive-widget=resizes-content), so its
+            // own layout lifts the composer above the keyboard.
             ViewCompat.setOnApplyWindowInsetsListener(rootView, (v, insets) -> {
                 Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
-                int h = Math.max(ime.bottom, 0);
-                if (h != lastImeHeight) {
-                    lastImeHeight = h;
-                    if (webView != null) {
-                        webView.evaluateJavascript(
-                                "window.__rphubSetKeyboard&&window.__rphubSetKeyboard(" + h + ")", null);
-                    }
+                int bottom = Math.max(ime.bottom, 0);
+                if (v.getPaddingBottom() != bottom) {
+                    v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), bottom);
                 }
                 return insets;
             });
+            ViewCompat.requestApplyInsets(rootView);
         }
 
         injectScripts();
@@ -303,15 +294,16 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     }
 
     private void injectScripts() {
-        String script = readAsset("inject/keyboard.js")
-                + "\n" + readAsset("inject/theme.js")
+        String mainCss = readAsset("inject/perf.css") + "\n" + readAsset("inject/dark.css");
+        String frameCss = readAsset("inject/external-dark.css");
+
+        String script = readAsset("inject/theme.js")
                 + "\n" + readAsset("inject/net.js")
                 + "\n" + readAsset("inject/download.js")
-                + "\n" + cssInjector(readAsset("inject/perf.css"))
-                + "\n" + cssInjector(readAsset("inject/dark.css"));
+                + "\n" + cssInjector(mainCss, frameCss);
 
-        // Preferred: run before any page script so the theme, keyboard hook and export
-        // bridge all exist before the page boots.
+        // Run before any page script. Each injected JS file guards on the host name so
+        // cross-origin embedded frames (万相广场) are never touched by page hooks.
         try {
             WebViewCompat.addDocumentStartJavaScript(webView, script, Collections.singleton("*"));
             return;
@@ -321,9 +313,15 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         fallbackScript = script;
     }
 
-    private static String cssInjector(String css) {
+    /**
+     * Injects the right stylesheet per origin: the full dark fallback on the main
+     * app, and a minimal force-dark layer inside embedded cross-origin frames.
+     */
+    private static String cssInjector(String mainCss, String frameCss) {
         return "(function(){if(window.__RPHUB_CSS__)return;window.__RPHUB_CSS__=1;"
-                + "var css=" + JSONObject.quote(css) + ";"
+                + "var main=(location.hostname==='sta1n156.github.io');"
+                + "var css=main?(" + JSONObject.quote(mainCss) + "):(" + JSONObject.quote(frameCss) + ");"
+                + "if(!css)return;"
                 + "function add(){try{var root=document.head||document.documentElement;"
                 + "if(!root)return false;var s=document.createElement('style');"
                 + "s.setAttribute('data-rphub','1');s.textContent=css;root.appendChild(s);"
@@ -344,9 +342,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     }
 
     private void applySystemUi() {
-        boolean night = isNightMode();
-        int background = night ? COLOR_DARK : COLOR_LIGHT;
-
         Window window = getWindow();
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.TRANSPARENT);
@@ -354,9 +349,9 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             window.setStatusBarContrastEnforced(false);
             window.setNavigationBarContrastEnforced(false);
         }
-        window.getDecorView().setBackgroundColor(background);
+        window.getDecorView().setBackgroundColor(COLOR_DARK);
         if (webView != null) {
-            webView.setBackgroundColor(background);
+            webView.setBackgroundColor(COLOR_DARK);
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams lp = window.getAttributes();
@@ -370,11 +365,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         // Immersive full-screen: no status bar, no navigation bar -> no white edges.
         controller.hide(WindowInsetsCompat.Type.systemBars());
-    }
-
-    private boolean isNightMode() {
-        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        return mode == Configuration.UI_MODE_NIGHT_YES;
     }
 
     @Override
