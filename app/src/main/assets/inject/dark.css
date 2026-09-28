@@ -1,0 +1,62 @@
+/* RP Hub APK — dark fallback layer.
+   Active only while following the system into dark mode. The site's own theme
+   covers most surfaces, but several stay light (notably the embedded 万相广场
+   container and a few panels). This layer fills the gaps using the same night
+   palette the site already ships, so nothing stays glaring white. */
+
+:root[data-app-theme="dark"] {
+    --rphub-surface: #282828;
+    --rphub-canvas: #1e1e1e;
+    --rphub-field: #212121;
+    --rphub-raised: #2e2e2e;
+    --rphub-border: #353535;
+    --rphub-text: #d4d4d4;
+    --rphub-text-dim: #9c9c9c;
+}
+
+/* Backgrounds */
+:root[data-app-theme="dark"] body { background-color: var(--rphub-canvas) !important; }
+:root[data-app-theme="dark"] .app-main { background-color: var(--rphub-canvas) !important; }
+:root[data-app-theme="dark"] .bg-white { background-color: var(--rphub-surface) !important; }
+:root[data-app-theme="dark"] [class*="bg-white/"] { background-color: rgba(40, 40, 40, 0.72) !important; }
+:root[data-app-theme="dark"] .bg-gray-50 { background-color: var(--rphub-canvas) !important; }
+:root[data-app-theme="dark"] [class*="bg-gray-50/"] { background-color: rgba(30, 30, 30, 0.72) !important; }
+:root[data-app-theme="dark"] .bg-gray-100 { background-color: var(--rphub-raised) !important; }
+:root[data-app-theme="dark"] [class*="bg-gray-100/"] { background-color: rgba(46, 46, 46, 0.72) !important; }
+:root[data-app-theme="dark"] .bg-gray-200 { background-color: #333333 !important; }
+
+/* Text */
+:root[data-app-theme="dark"] .text-gray-900,
+:root[data-app-theme="dark"] .text-gray-800,
+:root[data-app-theme="dark"] .text-gray-700 { color: var(--rphub-text) !important; }
+:root[data-app-theme="dark"] .text-gray-600,
+:root[data-app-theme="dark"] .text-gray-500 { color: var(--rphub-text-dim) !important; }
+:root[data-app-theme="dark"] .text-gray-400 { color: #7d7d7d !important; }
+:root[data-app-theme="dark"] .text-black { color: var(--rphub-text) !important; }
+
+/* Borders & dividers */
+:root[data-app-theme="dark"] .border-gray-100,
+:root[data-app-theme="dark"] .border-gray-200,
+:root[data-app-theme="dark"] .border-gray-300 { border-color: var(--rphub-border) !important; }
+:root[data-app-theme="dark"] .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
+:root[data-app-theme="dark"] .divide-gray-200 > :not([hidden]) ~ :not([hidden]) {
+    border-color: var(--rphub-border) !important;
+}
+
+/* Form fields */
+:root[data-app-theme="dark"] textarea,
+:root[data-app-theme="dark"] input[type="text"],
+:root[data-app-theme="dark"] input[type="search"],
+:root[data-app-theme="dark"] input[type="number"],
+:root[data-app-theme="dark"] input:not([type]) {
+    background-color: var(--rphub-field) !important;
+    color: var(--rphub-text) !important;
+    border-color: var(--rphub-border) !important;
+}
+:root[data-app-theme="dark"] textarea::placeholder,
+:root[data-app-theme="dark"] input::placeholder { color: #6f6f6f !important; }
+
+/* Embedded frames (万相广场 / generator): the inner document is cross-origin and
+   cannot be styled from here, so keep the frame surface dark while it loads and
+   let WebView's own force-darkening take care of the content. */
+:root[data-app-theme="dark"] iframe { background-color: var(--rphub-canvas) !important; }

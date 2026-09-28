@@ -22,12 +22,15 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -48,14 +51,17 @@ import java.util.Collections;
  * Full-screen immersive WebView shell for RP Hub.
  *
  * <p>Loads the live site so the APK always tracks the web version, and layers on
- * device-side polish: immersive edge-to-edge display, the page's own dark theme,
- * mobile performance tuning, and working upload / export flows.</p>
+ * device-side polish: immersive edge-to-edge display, system light/dark following
+ * with graceful dark fallback, mobile performance tuning, a keyboard bridge that
+ * lifts the page's own composer, and working upload / export flows.</p>
  */
 public class MainActivity extends AppCompatActivity implements Bridge.Listener {
 
     private static final String START_URL = "https://sta1n156.github.io/RP-Hub/";
+    private static final int COLOR_LIGHT = 0xFFF9FAFB;
     private static final int COLOR_DARK = 0xFF1E1E1E;
 
+    private FrameLayout rootView;
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private ActivityResultLauncher<Intent> fileChooserLauncher;
@@ -63,12 +69,16 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     private String fallbackScript = "";
 
     private byte[] pendingSaveData;
+    private int lastImeHeight = 0;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        // Edge-to-edge is only reliable together with the IME insets API (Android 11+).
+        // On older devices we let the platform handle keyboard resizing directly.
+        boolean manualIme = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R;
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), !manualIme);
 
         // Upload: pick a file through the system file manager.
         fileChooserLauncher = registerForActivityResult(
@@ -100,7 +110,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                     }
                 });
 
-        buildWebView();
+        buildWebView(manualIme);
         applySystemUi();
 
         if (savedInstanceState == null) {
@@ -110,13 +120,16 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         }
     }
 
-    private void buildWebView() {
+    private void buildWebView(boolean manualIme) {
         webView = new WebView(this);
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setContentView(webView);
 
-        webView.setBackgroundColor(COLOR_DARK);
+        rootView = new FrameLayout(this);
+        rootView.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(rootView);
+
+        boolean night = isNightMode();
+        webView.setBackgroundColor(night ? COLOR_DARK : COLOR_LIGHT);
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -147,11 +160,13 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             }
         } catch (Throwable ignored) { }
         try {
-            // The page styles its own dark theme, so never let WebView algorithmically dim it.
+            // Allow WebView to force-darken pages that ship no dark theme of their own
+            // (the embedded 万相广场 frame). Pages that declare colour-scheme support -
+            // like the main app - are left untouched.
             if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-                WebSettingsCompat.setAlgorithmicDarkeningAllowed(s, false);
+                WebSettingsCompat.setAlgorithmicDarkeningAllowed(s, true);
             } else if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(s, WebSettingsCompat.FORCE_DARK_OFF);
+                WebSettingsCompat.setForceDark(s, WebSettingsCompat.FORCE_DARK_AUTO);
             }
         } catch (Throwable ignored) { }
 
@@ -230,6 +245,23 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             }
         });
 
+        if (manualIme) {
+            // Full-screen shell never resizes: forward the keyboard height to the page,
+            // which lifts its own composer (see inject/keyboard.js).
+            ViewCompat.setOnApplyWindowInsetsListener(rootView, (v, insets) -> {
+                Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+                int h = Math.max(ime.bottom, 0);
+                if (h != lastImeHeight) {
+                    lastImeHeight = h;
+                    if (webView != null) {
+                        webView.evaluateJavascript(
+                                "window.__rphubSetKeyboard&&window.__rphubSetKeyboard(" + h + ")", null);
+                    }
+                }
+                return insets;
+            });
+        }
+
         injectScripts();
     }
 
@@ -271,11 +303,15 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     }
 
     private void injectScripts() {
-        String script = readAsset("inject/theme.js")
+        String script = readAsset("inject/keyboard.js")
+                + "\n" + readAsset("inject/theme.js")
+                + "\n" + readAsset("inject/net.js")
                 + "\n" + readAsset("inject/download.js")
-                + "\n" + cssInjector(readAsset("inject/perf.css"));
+                + "\n" + cssInjector(readAsset("inject/perf.css"))
+                + "\n" + cssInjector(readAsset("inject/dark.css"));
 
-        // Preferred: run before any page script so theme + export hooks exist first.
+        // Preferred: run before any page script so the theme, keyboard hook and export
+        // bridge all exist before the page boots.
         try {
             WebViewCompat.addDocumentStartJavaScript(webView, script, Collections.singleton("*"));
             return;
@@ -308,6 +344,9 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     }
 
     private void applySystemUi() {
+        boolean night = isNightMode();
+        int background = night ? COLOR_DARK : COLOR_LIGHT;
+
         Window window = getWindow();
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.TRANSPARENT);
@@ -315,9 +354,9 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
             window.setStatusBarContrastEnforced(false);
             window.setNavigationBarContrastEnforced(false);
         }
-        window.getDecorView().setBackgroundColor(COLOR_DARK);
+        window.getDecorView().setBackgroundColor(background);
         if (webView != null) {
-            webView.setBackgroundColor(COLOR_DARK);
+            webView.setBackgroundColor(background);
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams lp = window.getAttributes();
@@ -331,6 +370,11 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
         // Immersive full-screen: no status bar, no navigation bar -> no white edges.
         controller.hide(WindowInsetsCompat.Type.systemBars());
+    }
+
+    private boolean isNightMode() {
+        int mode = getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        return mode == Configuration.UI_MODE_NIGHT_YES;
     }
 
     @Override
