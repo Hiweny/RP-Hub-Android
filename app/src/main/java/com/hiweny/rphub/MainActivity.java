@@ -29,6 +29,8 @@ import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -49,10 +51,9 @@ import java.util.Collections;
  * Full-screen immersive WebView shell for RP Hub.
  *
  * <p>Loads the live site so the APK always tracks the web version, and layers on
- * device-side polish: immersive full-screen display, an always-dark theme with a
+ * device-side polish: immersive edge-to-edge display, an always-dark theme with a
  * fallback layer for surfaces the site misses, mobile performance tuning, a keyboard
- * that is resized natively by the system (smooth, no reflow stutter), and working
- * upload / export flows.</p>
+ * that lifts the page's own composer, and working upload / export flows.</p>
  */
 public class MainActivity extends AppCompatActivity implements Bridge.Listener {
 
@@ -68,19 +69,18 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
     private String fallbackScript = "";
 
     private byte[] pendingSaveData;
+    private int lastKeyboardInset = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Keep the platform in charge of window insets (including the IME). We only
-        // hide the system bars to reach full screen - the keyboard resize is then
-        // driven natively by the system, in lock-step with the keyboard animation,
-        // so the page's composer glides instead of jumping.
-        WindowCompat.setDecorFitsSystemWindows(getWindow(), true);
+        // Edge-to-edge full-screen on Android 11+ (we consume the IME insets ourselves);
+        // older devices let the platform resize the window for the keyboard.
+        boolean manualIme = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R;
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), !manualIme);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
-        // Upload: pick a file through the system file manager.
         fileChooserLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
@@ -94,7 +94,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                     fileCallback = null;
                 });
 
-        // Export: never write silently - ask the user where to save (SAF).
         saveLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
@@ -110,7 +109,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                     }
                 });
 
-        buildWebView();
+        buildWebView(manualIme);
         applySystemUi();
 
         if (savedInstanceState == null) {
@@ -120,7 +119,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         }
     }
 
-    private void buildWebView() {
+    private void buildWebView(boolean manualIme) {
         webView = new WebView(this);
 
         rootView = new FrameLayout(this);
@@ -153,11 +152,6 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
         }
 
         // --- low-level rendering tuning -------------------------------------------------
-        try {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.OFF_SCREEN_PRERASTER)) {
-                WebSettingsCompat.setOffscreenPreRaster(s, true);
-            }
-        } catch (Throwable ignored) { }
         try {
             // WebView force-darkens pages that ship no dark theme (the embedded
             // 万相广场 frame); pages that declare colour-scheme support are untouched.
@@ -239,6 +233,26 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 }
             }
         });
+
+        if (manualIme) {
+            // Full-screen shell: the window itself never resizes for the keyboard, so we
+            // shrink the content view instead. That is exactly what the page expects (its
+            // viewport declares interactive-widget=resizes-content) and how its composer
+            // lifts above the keyboard.
+            //
+            // Only react when the reported inset actually changes (i.e. on the settled
+            // value) - driving it per animation frame caused constant WebView relayout.
+            ViewCompat.setOnApplyWindowInsetsListener(rootView, (v, insets) -> {
+                Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+                int bottom = Math.max(ime.bottom, 0);
+                if (bottom != lastKeyboardInset) {
+                    lastKeyboardInset = bottom;
+                    v.setPadding(0, 0, 0, bottom);
+                }
+                return insets;
+            });
+            ViewCompat.requestApplyInsets(rootView);
+        }
 
         injectScripts();
     }
@@ -351,8 +365,7 @@ public class MainActivity extends AppCompatActivity implements Bridge.Listener {
                 WindowCompat.getInsetsController(window, window.getDecorView());
         controller.setSystemBarsBehavior(
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-        // Hide the bars for full screen. Because they are transient (swipe to reveal),
-        // the content stays edge-to-edge - no white strips at the top or bottom.
+        // Immersive full-screen: no status bar, no navigation bar -> no white edges.
         controller.hide(WindowInsetsCompat.Type.systemBars());
     }
 

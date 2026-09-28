@@ -1,10 +1,11 @@
 /* RP Hub APK — injected interaction layer.
-   Deliberately minimal: it only touches interaction chrome and never changes any
-   of the page's visuals (no blur, shadow, colour or layout overrides). */
+   Deliberately tiny and only on two root elements: blanket `* { … !important }`
+   rules are re-evaluated for every element on every DOM mutation and hurt typing
+   responsiveness in long chats. */
 
-/* Remove the grey tap highlight so taps feel instant. */
-* {
-    -webkit-tap-highlight-color: transparent !important;
+/* Remove the grey tap highlight so taps feel instant (inherited from the root). */
+html {
+    -webkit-tap-highlight-color: transparent;
 }
 
 /* Prevent rubber-band chaining from dragging the whole document in a

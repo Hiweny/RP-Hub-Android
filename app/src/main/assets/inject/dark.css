@@ -1,8 +1,9 @@
-/* RP Hub APK — dark fallback layer.
-   Active only while following the system into dark mode. The site's own theme
-   covers most surfaces, but several stay light (notably the embedded 万相广场
-   container and a few panels). This layer fills the gaps using the same night
-   palette the site already ships, so nothing stays glaring white. */
+/* RP Hub APK — dark fallback layer (main app only).
+   Complements the site's own theme for the few light surfaces it misses.
+
+   NOTE: kept to plain class selectors on purpose. Attribute-substring selectors
+   like [class*="bg-white/"] are re-evaluated on every DOM mutation, which caused
+   noticeable typing lag in long chats - do not reintroduce them here. */
 
 :root[data-app-theme="dark"] {
     --rphub-surface: #282828;
@@ -14,16 +15,19 @@
     --rphub-text-dim: #9c9c9c;
 }
 
-/* Backgrounds */
-:root[data-app-theme="dark"] body { background-color: var(--rphub-canvas) !important; }
+/* Surfaces */
+:root[data-app-theme="dark"] body,
 :root[data-app-theme="dark"] .app-main { background-color: var(--rphub-canvas) !important; }
 :root[data-app-theme="dark"] .bg-white { background-color: var(--rphub-surface) !important; }
-:root[data-app-theme="dark"] [class*="bg-white/"] { background-color: rgba(40, 40, 40, 0.72) !important; }
 :root[data-app-theme="dark"] .bg-gray-50 { background-color: var(--rphub-canvas) !important; }
-:root[data-app-theme="dark"] [class*="bg-gray-50/"] { background-color: rgba(30, 30, 30, 0.72) !important; }
 :root[data-app-theme="dark"] .bg-gray-100 { background-color: var(--rphub-raised) !important; }
-:root[data-app-theme="dark"] [class*="bg-gray-100/"] { background-color: rgba(46, 46, 46, 0.72) !important; }
 :root[data-app-theme="dark"] .bg-gray-200 { background-color: #333333 !important; }
+
+/* Common translucent-white variants (exact class names, no attribute matching). */
+:root[data-app-theme="dark"] .bg-white\/50,
+:root[data-app-theme="dark"] .bg-white\/60,
+:root[data-app-theme="dark"] .bg-white\/70,
+:root[data-app-theme="dark"] .bg-white\/80 { background-color: rgba(40, 40, 40, 0.72) !important; }
 
 /* Text */
 :root[data-app-theme="dark"] .text-gray-900,
@@ -31,32 +35,18 @@
 :root[data-app-theme="dark"] .text-gray-700 { color: var(--rphub-text) !important; }
 :root[data-app-theme="dark"] .text-gray-600,
 :root[data-app-theme="dark"] .text-gray-500 { color: var(--rphub-text-dim) !important; }
-:root[data-app-theme="dark"] .text-gray-400 { color: #7d7d7d !important; }
-:root[data-app-theme="dark"] .text-black { color: var(--rphub-text) !important; }
 
-/* Borders & dividers */
+/* Borders */
 :root[data-app-theme="dark"] .border-gray-100,
 :root[data-app-theme="dark"] .border-gray-200,
 :root[data-app-theme="dark"] .border-gray-300 { border-color: var(--rphub-border) !important; }
-:root[data-app-theme="dark"] .divide-gray-100 > :not([hidden]) ~ :not([hidden]),
-:root[data-app-theme="dark"] .divide-gray-200 > :not([hidden]) ~ :not([hidden]) {
-    border-color: var(--rphub-border) !important;
-}
 
 /* Form fields */
 :root[data-app-theme="dark"] textarea,
 :root[data-app-theme="dark"] input[type="text"],
 :root[data-app-theme="dark"] input[type="search"],
-:root[data-app-theme="dark"] input[type="number"],
 :root[data-app-theme="dark"] input:not([type]) {
     background-color: var(--rphub-field) !important;
     color: var(--rphub-text) !important;
     border-color: var(--rphub-border) !important;
 }
-:root[data-app-theme="dark"] textarea::placeholder,
-:root[data-app-theme="dark"] input::placeholder { color: #6f6f6f !important; }
-
-/* Embedded frames (万相广场 / generator): the inner document is cross-origin and
-   cannot be styled from here, so keep the frame surface dark while it loads and
-   let WebView's own force-darkening take care of the content. */
-:root[data-app-theme="dark"] iframe { background-color: var(--rphub-canvas) !important; }
